@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Password Strength Analyzer</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 500px;
+            background: white;
+            padding: 35px;
+            border-radius: 20px;
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.2);
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #777;
+            margin-bottom: 25px;
+        }
+
+        label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .password-box {
+            display: flex;
+            gap: 8px;
+        }
+
+        input {
+            flex: 1;
+            padding: 13px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            outline: none;
+        }
+
+        input:focus {
+            border-color: #667eea;
+        }
+
+        button {
+            border: none;
+            border-radius: 8px;
+            padding: 12px 15px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        #toggleBtn {
+            background: #eee;
+            color: #333;
+        }
+
+        .strength-container {
+            margin-top: 20px;
+        }
+
+        .strength-bar {
+            width: 100%;
+            height: 12px;
+            background: #ddd;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        #strengthFill {
+            height: 100%;
+            width: 0%;
+            transition: 0.3s;
+        }
+
+        #strengthText {
+            text-align: center;
+            font-weight: bold;
+            font-size: 18px;
+        }
+
+        .requirements {
+            margin-top: 25px;
+        }
+
+        .requirements h3 {
+            margin-bottom: 12px;
+            color: #333;
+        }
+
+        .requirements p {
+            margin: 8px 0;
+            color: #777;
+        }
+
+        .valid {
+            color: green !important;
+        }
+
+        .invalid {
+            color: #d9534f !important;
+        }
+
+        .suggestion {
+            margin-top: 25px;
+            padding: 15px;
+            background: #f5f7ff;
+            border-radius: 10px;
+            color: #444;
+        }
+
+        .suggestion strong {
+            color: #667eea;
+        }
+
+        .generate-btn {
+            width: 100%;
+            margin-top: 20px;
+            background: #667eea;
+            color: white;
+            font-size: 16px;
+        }
+
+        .generate-btn:hover {
+            background: #5568d8;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>🔐 Password Strength Analyzer</h1>
+
+    <p class="subtitle">
+        Check how strong your password is
+    </p>
+
+    <label for="password">Enter Password</label>
+
+    <div class="password-box">
+        <input
+            type="password"
+            id="password"
+            placeholder="Enter your password..."
+            oninput="checkPassword()"
+        >
+
+        <button id="toggleBtn" onclick="togglePassword()">
+            Show
+        </button>
+    </div>
+
+    <div class="strength-container">
+
+        <div class="strength-bar">
+            <div id="strengthFill"></div>
+        </div>
+
+        <p id="strengthText">Enter a password</p>
+
+    </div>
+
+    <div class="requirements">
+
+        <h3>Password Requirements</h3>
+
+        <p id="length">❌ At least 8 characters</p>
+
+        <p id="uppercase">❌ Contains an uppercase letter</p>
+
+        <p id="lowercase">❌ Contains a lowercase letter</p>
+
+        <p id="number">❌ Contains a number</p>
+
+        <p id="special">❌ Contains a special character</p>
+
+        <p id="unique">❌ Not a common/repeated password</p>
+
+    </div>
+
+    <div class="suggestion">
+        <strong>Suggestion:</strong>
+        <span id="suggestionText">
+            Enter a password to get suggestions.
+        </span>
+    </div>
+
+    <button class="generate-btn" onclick="generatePassword()">
+        Generate Strong Password
+    </button>
+
+</div>
+
+
+<script>
+
+    function checkPassword() {
+
+        const password = document.getElementById("password").value;
+
+        const strengthFill = document.getElementById("strengthFill");
+        const strengthText = document.getElementById("strengthText");
+        const suggestionText = document.getElementById("suggestionText");
+
+        // Password requirements
+        const hasLength = password.length >= 8;
+        const hasUppercase = /[A-Z]/.test(password);
+        const hasLowercase = /[a-z]/.test(password);
+        const hasNumber = /[0-9]/.test(password);
+        const hasSpecial = /[^A-Za-z0-9]/.test(password);
+
+        // Check common/repeated passwords
+        const commonPasswords = [
+            "password",
+            "12345678",
+            "123456789",
+            "qwerty",
+            "password123",
+            "admin",
+            "admin123",
+            "letmein",
+            "welcome"
+        ];
+
+        const isCommon = commonPasswords.includes(password.toLowerCase());
+
+        // Update requirement messages
+        updateRequirement("length", hasLength);
+        updateRequirement("uppercase", hasUppercase);
+        updateRequirement("lowercase", hasLowercase);
+        updateRequirement("number", hasNumber);
+        updateRequirement("special", hasSpecial);
+        updateRequirement("unique", !isCommon && password.length > 0);
+
+        // Calculate score
+        let score = 0;
+
+        if (hasLength) score++;
+        if (hasUppercase) score++;
+        if (hasLowercase) score++;
+        if (hasNumber) score++;
+        if (hasSpecial) score++;
+
+        if (password.length >= 12) {
+            score++;
+        }
+
+        if (!isCommon && password.length > 0) {
+            score++;
+        }
+
+        // Display strength
+        if (password.length === 0) {
+
+            strengthFill.style.width = "0%";
+            strengthText.textContent = "Enter a password";
+            suggestionText.textContent =
+                "Use a long password with uppercase, lowercase, numbers and symbols.";
+
+        }
+        else if (isCommon) {
+
+            strengthFill.style.width = "20%";
+            strengthText.textContent = "Very Weak";
+            strengthFill.style.background = "#e74c3c";
+
+            suggestionText.textContent =
+                "Avoid common passwords such as password, 12345678, or qwerty.";
+
+        }
+        else if (score <= 2) {
+
+            strengthFill.style.width = "30%";
+            strengthText.textContent = "Weak";
+            strengthFill.style.background = "#e74c3c";
+
+            suggestionText.textContent =
+                "Add uppercase letters, numbers, special characters and make it longer.";
+
+        }
+        else if (score <= 4) {
+
+            strengthFill.style.width = "55%";
+            strengthText.textContent = "Medium";
+            strengthFill.style.background = "#f39c12";
+
+            suggestionText.textContent =
+                "Good start. Try making the password longer and more unique.";
+
+        }
+        else if (score <= 5) {
+
+            strengthFill.style.width = "75%";
+            strengthText.textContent = "Strong";
+            strengthFill.style.background = "#2ecc71";
+
+            suggestionText.textContent =
+                "Strong password! Consider using 12+ characters for better security.";
+
+        }
+        else {
+
+            strengthFill.style.width = "100%";
+            strengthText.textContent = "Very Strong";
+            strengthFill.style.background = "#27ae60";
+
+            suggestionText.textContent =
+                "Excellent! This password meets most security requirements.";
+
+        }
+    }
+
+
+    function updateRequirement(id, valid) {
+
+        const element = document.getElementById(id);
+
+        if (valid) {
+
+            element.classList.remove("invalid");
+            element.classList.add("valid");
+
+            element.textContent =
+                "✅ " + element.textContent.substring(2);
+
+        }
+        else {
+
+            element.classList.remove("valid");
+            element.classList.add("invalid");
+
+            element.textContent =
+                "❌ " + element.textContent.substring(2);
+
+        }
+    }
+
+
+    function togglePassword() {
+
+        const passwordInput = document.getElementById("password");
+        const toggleBtn = document.getElementById("toggleBtn");
+
+        if (passwordInput.type === "password") {
+
+            passwordInput.type = "text";
+            toggleBtn.textContent = "Hide";
+
+        }
+        else {
+
+            passwordInput.type = "password";
+            toggleBtn.textContent = "Show";
+
+        }
+    }
+
+
+    function generatePassword() {
+
+        const uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        const lowercase = "abcdefghijklmnopqrstuvwxyz";
+        const numbers = "0123456789";
+        const special = "!@#$%^&*()_+";
+
+        const allCharacters =
+            uppercase + lowercase + numbers + special;
+
+        let password = "";
+
+        // Make sure generated password has all types
+        password += randomCharacter(uppercase);
+        password += randomCharacter(lowercase);
+        password += randomCharacter(numbers);
+        password += randomCharacter(special);
+
+        // Add additional random characters
+        for (let i = 4; i < 16; i++) {
+            password += randomCharacter(allCharacters);
+        }
+
+        // Shuffle password
+        password = password
+            .split("")
+            .sort(() => Math.random() - 0.5)
+            .join("");
+
+        document.getElementById("password").value = password;
+
+        checkPassword();
+    }
+
+
+    function randomCharacter(characters) {
+
+        const randomIndex =
+            Math.floor(Math.random() * characters.length);
+
+        return characters[randomIndex];
+    }
+
+</script>
+
+</body>
+</html>
