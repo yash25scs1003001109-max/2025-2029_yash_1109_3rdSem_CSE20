@@ -1,0 +1,423 @@
+import re
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from scipy.sparse import hstack, csr_matrix
+
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    classification_report
+)
+from sklearn.preprocessing import StandardScaler
+
+
+# ============================================================
+# 1. LOAD DATASET
+# ============================================================
+
+DATASET = "phishing_emails.csv"
+
+data = pd.read_csv(DATASET)
+
+# Remove empty rows
+data = data.dropna(subset=["text", "label"])
+
+# Convert everything to string
+data["text"] = data["text"].astype(str)
+data["label"] = data["label"].astype(str)
+
+print("Dataset loaded successfully!")
+print("Number of emails:", len(data))
+print("\nClass distribution:")
+print(data["label"].value_counts())
+
+
+# ============================================================
+# 2. FEATURE EXTRACTION FUNCTIONS
+# ============================================================
+
+# URL pattern
+URL_PATTERN = r'https?://[^\s]+|www\.[^\s]+'
+
+# Common phishing-related keywords
+PHISHING_KEYWORDS = [
+    "urgent",
+    "verify",
+    "verification",
+    "password",
+    "account",
+    "suspended",
+    "suspension",
+    "click",
+    "login",
+    "signin",
+    "security",
+    "confirm",
+    "update",
+    "bank",
+    "credit",
+    "prize",
+    "winner",
+    "refund",
+    "payment",
+    "invoice",
+    "limited",
+    "immediately",
+    "dear customer",
+    "otp",
+    "unlock"
+]
+
+
+def extract_urls(text):
+    """
+    Extract URLs from email text.
+    """
+    return re.findall(URL_PATTERN, text, flags=re.IGNORECASE)
+
+
+def extract_url_features(text):
+    """
+    Extract numerical URL-related features.
+    """
+
+    urls = extract_urls(text)
+
+    # Number of URLs
+    url_count = len(urls)
+
+    # Total URL length
+    total_url_length = sum(len(url) for url in urls)
+
+    # Suspicious URL indicators
+    suspicious_url_count = 0
+
+    # IP address inside URL
+    ip_url_count = 0
+
+    # HTTPS count
+    https_count = 0
+
+    for url in urls:
+
+        # Suspicious URL characters/patterns
+        if (
+            "@" in url
+            or "-" in url
+            or "%" in url
+            or "login" in url.lower()
+            or "verify" in url.lower()
+            or "secure" in url.lower()
+        ):
+            suspicious_url_count += 1
+
+        # Check for IP address
+        if re.search(
+            r'https?://(?:\d{1,3}\.){3}\d{1,3}',
+            url
+        ):
+            ip_url_count += 1
+
+        # HTTPS
+        if url.lower().startswith("https://"):
+            https_count += 1
+
+    return [
+        url_count,
+        total_url_length,
+        suspicious_url_count,
+        ip_url_count,
+        https_count
+    ]
+
+
+def extract_text_features(text):
+    """
+    Extract phishing-related text features.
+    """
+
+    text_lower = text.lower()
+
+    # Count phishing keywords
+    keyword_count = sum(
+        text_lower.count(keyword)
+        for keyword in PHISHING_KEYWORDS
+    )
+
+    # Number of exclamation marks
+    exclamation_count = text.count("!")
+
+    # Number of capital letters
+    capital_count = sum(
+        1 for char in text if char.isupper()
+    )
+
+    # Number of digits
+    digit_count = sum(
+        1 for char in text if char.isdigit()
+    )
+
+    # Email length
+    email_length = len(text)
+
+    # Number of words
+    word_count = len(text.split())
+
+    return [
+        keyword_count,
+        exclamation_count,
+        capital_count,
+        digit_count,
+        email_length,
+        word_count
+    ]
+
+
+# ============================================================
+# 3. CREATE NUMERICAL FEATURES
+# ============================================================
+
+numeric_features = []
+
+for email in data["text"]:
+
+    url_features = extract_url_features(email)
+    text_features = extract_text_features(email)
+
+    numeric_features.append(
+        url_features + text_features
+    )
+
+numeric_features = np.array(numeric_features)
+
+print("\nNumerical feature shape:")
+print(numeric_features.shape)
+
+
+# ============================================================
+# 4. TF-IDF TEXT FEATURES
+# ============================================================
+
+vectorizer = TfidfVectorizer(
+    lowercase=True,
+    stop_words="english",
+    ngram_range=(1, 2),
+    max_features=10000
+)
+
+text_features = vectorizer.fit_transform(data["text"])
+
+print("\nTF-IDF feature shape:")
+print(text_features.shape)
+
+
+# ============================================================
+# 5. SCALE NUMERICAL FEATURES
+# ============================================================
+
+scaler = StandardScaler()
+
+scaled_numeric_features = scaler.fit_transform(
+    numeric_features
+)
+
+scaled_numeric_features = csr_matrix(
+    scaled_numeric_features
+)
+
+
+# ============================================================
+# 6. COMBINE TEXT + URL FEATURES
+# ============================================================
+
+X = hstack([
+    text_features,
+    scaled_numeric_features
+])
+
+y = data["label"]
+
+
+# ============================================================
+# 7. TRAIN / TEST SPLIT
+# ============================================================
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
+)
+
+print("\nTraining samples:", X_train.shape[0])
+print("Testing samples:", X_test.shape[0])
+
+
+# ============================================================
+# 8. TRAIN MACHINE LEARNING MODEL
+# ============================================================
+
+model = LogisticRegression(
+    max_iter=2000,
+    class_weight="balanced"
+)
+
+model.fit(X_train, y_train)
+
+print("\nModel training completed!")
+
+
+# ============================================================
+# 9. PREDICTION
+# ============================================================
+
+y_pred = model.predict(X_test)
+
+
+# ============================================================
+# 10. ACCURACY
+# ============================================================
+
+accuracy = accuracy_score(y_test, y_pred)
+
+print("\n====================================")
+print("       MODEL PERFORMANCE")
+print("====================================")
+
+print(f"Accuracy: {accuracy * 100:.2f}%")
+
+
+# ============================================================
+# 11. CLASSIFICATION REPORT
+# ============================================================
+
+print("\nClassification Report:")
+print(
+    classification_report(
+        y_test,
+        y_pred,
+        zero_division=0
+    )
+)
+
+
+# ============================================================
+# 12. CONFUSION MATRIX
+# ============================================================
+
+cm = confusion_matrix(
+    y_test,
+    y_pred,
+    labels=["Safe", "Phishing"]
+)
+
+print("\nConfusion Matrix:")
+print(cm)
+
+
+# ============================================================
+# 13. DISPLAY CONFUSION MATRIX
+# ============================================================
+
+plt.figure(figsize=(7, 5))
+
+sns.heatmap(
+    cm,
+    annot=True,
+    fmt="d",
+    cmap="Blues",
+    xticklabels=["Safe", "Phishing"],
+    yticklabels=["Safe", "Phishing"]
+)
+
+plt.title("Phishing Email Detection - Confusion Matrix")
+plt.xlabel("Predicted Label")
+plt.ylabel("Actual Label")
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# 14. PREDICT A NEW EMAIL
+# ============================================================
+
+def predict_email(email):
+
+    # TF-IDF feature
+    email_text_feature = vectorizer.transform([email])
+
+    # Numerical features
+    email_url_features = extract_url_features(email)
+    email_text_features = extract_text_features(email)
+
+    email_numeric = np.array(
+        email_url_features + email_text_features
+    ).reshape(1, -1)
+
+    # Scale numerical features
+    email_numeric_scaled = scaler.transform(
+        email_numeric
+    )
+
+    email_numeric_scaled = csr_matrix(
+        email_numeric_scaled
+    )
+
+    # Combine features
+    final_features = hstack([
+        email_text_feature,
+        email_numeric_scaled
+    ])
+
+    # Prediction
+    prediction = model.predict(final_features)[0]
+
+    # Probability
+    probability = model.predict_proba(
+        final_features
+    ).max()
+
+    print("\n====================================")
+    print("          EMAIL ANALYSIS")
+    print("====================================")
+
+    print("Email:")
+    print(email)
+
+    print("\nPrediction:", prediction)
+    print(f"Confidence: {probability * 100:.2f}%")
+
+    if prediction.lower() == "phishing":
+        print("⚠️ WARNING: This email appears to be PHISHING.")
+    else:
+        print("✅ This email appears to be SAFE.")
+
+    print("\nExtracted URLs:")
+    urls = extract_urls(email)
+
+    if urls:
+        for url in urls:
+            print("-", url)
+    else:
+        print("No URLs found.")
+
+
+# ============================================================
+# 15. TEST WITH YOUR OWN EMAIL
+# ============================================================
+
+new_email = """
+URGENT! Your bank account has been suspended.
+Please verify your password immediately by clicking
+http://secure-login-example.com/verify
+"""
+
+predict_email(new_email)
