@@ -1,0 +1,249 @@
+import socket
+import requests
+from datetime import datetime
+
+
+# Common ports and their services
+COMMON_PORTS = {
+    21: "FTP",
+    22: "SSH",
+    23: "Telnet",
+    25: "SMTP",
+    53: "DNS",
+    80: "HTTP",
+    110: "POP3",
+    139: "NetBIOS",
+    143: "IMAP",
+    443: "HTTPS",
+    445: "SMB",
+    3306: "MySQL",
+    3389: "RDP",
+    5432: "PostgreSQL",
+    8080: "HTTP-Proxy"
+}
+
+# Simple outdated-version examples
+OUTDATED_VERSIONS = {
+    "Apache": ["2.2", "2.4.1", "2.4.2"],
+    "nginx": ["1.10", "1.12", "1.14"],
+    "OpenSSH": ["6.", "7.0", "7.1"]
+}
+
+
+def scan_port(host, port):
+    """Check whether a TCP port is open."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+
+        result = sock.connect_ex((host, port))
+        sock.close()
+
+        return result == 0
+
+    except socket.error:
+        return False
+
+
+def get_banner(host, port):
+    """Try to obtain a service banner."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect((host, port))
+
+        if port in [80, 8080]:
+            request = (
+                f"HEAD / HTTP/1.1\r\n"
+                f"Host: {host}\r\n"
+                f"Connection: close\r\n\r\n"
+            )
+            sock.send(request.encode())
+
+        else:
+            sock.send(b"\r\n")
+
+        banner = sock.recv(1024).decode(errors="ignore")
+        sock.close()
+
+        return banner.strip()
+
+    except Exception:
+        return ""
+
+
+def check_http_headers(host, port):
+    """Check basic HTTP security headers."""
+    vulnerabilities = []
+
+    protocol = "https" if port == 443 else "http"
+    url = f"{protocol}://{host}:{port}"
+
+    try:
+        response = requests.get(
+            url,
+            timeout=3,
+            verify=False
+        )
+
+        headers = response.headers
+
+        required_headers = {
+            "X-Content-Type-Options":
+                "Missing X-Content-Type-Options header",
+
+            "X-Frame-Options":
+                "Missing X-Frame-Options header",
+
+            "Content-Security-Policy":
+                "Missing Content-Security-Policy header"
+        }
+
+        for header, message in required_headers.items():
+            if header not in headers:
+                vulnerabilities.append(message)
+
+        # Check server information
+        server = headers.get("Server", "")
+
+        if server:
+            vulnerabilities.append(
+                f"Server information exposed: {server}"
+            )
+
+        return vulnerabilities
+
+    except requests.RequestException:
+        return []
+
+
+def check_outdated_software(banner):
+    """Perform a simple banner-based outdated software check."""
+    vulnerabilities = []
+
+    for software, versions in OUTDATED_VERSIONS.items():
+
+        if software.lower() in banner.lower():
+
+            for version in versions:
+                if version in banner:
+                    vulnerabilities.append(
+                        f"Possible outdated {software} version detected: "
+                        f"{version}"
+                    )
+
+    return vulnerabilities
+
+
+def generate_report(host, results):
+    """Generate a vulnerability report."""
+    filename = "vulnerability_report.txt"
+
+    with open(filename, "w", encoding="utf-8") as file:
+
+        file.write("=" * 60 + "\n")
+        file.write("       VULNERABILITY SCANNER REPORT\n")
+        file.write("=" * 60 + "\n\n")
+
+        file.write(f"Target: {host}\n")
+        file.write(
+            f"Scan Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        )
+
+        for result in results:
+
+            file.write("-" * 60 + "\n")
+            file.write(
+                f"Port: {result['port']} "
+                f"({result['service']})\n"
+            )
+
+            file.write(f"Status: {result['status']}\n")
+
+            if result["banner"]:
+                file.write(
+                    f"Banner: {result['banner'][:200]}\n"
+                )
+
+            if result["vulnerabilities"]:
+                file.write("\nVulnerabilities:\n")
+
+                for vulnerability in result["vulnerabilities"]:
+                    file.write(
+                        f"  [!] {vulnerability}\n"
+                    )
+
+            else:
+                file.write("\nNo basic vulnerabilities detected.\n")
+
+        file.write("\n" + "=" * 60 + "\n")
+
+    print(f"\nReport saved as: {filename}")
+
+
+def main():
+
+    print("=" * 60)
+    print("          VULNERABILITY SCANNER")
+    print("=" * 60)
+
+    host = input(
+        "\nEnter target IP/hostname "
+        "(use 127.0.0.1 for your own computer): "
+    ).strip()
+
+    # Resolve hostname
+    try:
+        ip = socket.gethostbyname(host)
+        print(f"\nTarget resolved to: {ip}")
+
+    except socket.gaierror:
+        print("Invalid hostname/IP address.")
+        return
+
+    results = []
+
+    print("\nStarting scan...\n")
+
+    for port, service in COMMON_PORTS.items():
+
+        print(f"Scanning port {port}...", end=" ")
+
+        if scan_port(ip, port):
+
+            print("OPEN")
+
+            banner = get_banner(ip, port)
+
+            vulnerabilities = []
+
+            # Check software versions
+            vulnerabilities.extend(
+                check_outdated_software(banner)
+            )
+
+            # Check HTTP configuration
+            if port in [80, 8080, 443]:
+                vulnerabilities.extend(
+                    check_http_headers(ip, port)
+                )
+
+            results.append({
+                "port": port,
+                "service": service,
+                "status": "OPEN",
+                "banner": banner,
+                "vulnerabilities": vulnerabilities
+            })
+
+        else:
+            print("CLOSED")
+
+    generate_report(host, results)
+
+    print("\nScan completed.")
+    print(f"Open ports found: {len(results)}")
+
+
+if __name__ == "__main__":
+    main()
