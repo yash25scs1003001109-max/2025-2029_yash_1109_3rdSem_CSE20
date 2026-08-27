@@ -1,0 +1,788 @@
+from flask import (
+    Flask, request, redirect, url_for,
+    render_template_string, session, flash
+)
+import sqlite3
+import bcrypt
+import pyotp
+import secrets
+import os
+import re
+from functools import wraps
+from hmac import compare_digest
+
+app = Flask(__name__)
+
+# IMPORTANT:
+# In production, store this in an environment variable.
+app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # Set True when deploying over HTTPS:
+    SESSION_COOKIE_SECURE=False
+)
+
+DATABASE = "users.db"
+
+
+# --------------------------------------------------
+# DATABASE
+# --------------------------------------------------
+
+def get_db():
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            two_fa_enabled INTEGER DEFAULT 0,
+            two_fa_secret TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# --------------------------------------------------
+# INPUT VALIDATION
+# --------------------------------------------------
+
+def valid_username(username):
+    return bool(
+        re.fullmatch(r"[A-Za-z0-9_]{3,30}", username)
+    )
+
+
+def valid_password(password):
+    # Minimum 8 characters
+    return len(password) >= 8
+
+
+# --------------------------------------------------
+# CSRF PROTECTION
+# --------------------------------------------------
+
+def get_csrf_token():
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+
+    return session["csrf_token"]
+
+
+def check_csrf():
+    token = request.form.get("csrf_token", "")
+
+    return compare_digest(
+        token,
+        session.get("csrf_token", "")
+    )
+
+
+# --------------------------------------------------
+# LOGIN REQUIRED DECORATOR
+# --------------------------------------------------
+
+def login_required(func):
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+
+        if "user_id" not in session:
+            flash("Please login first.")
+            return redirect(url_for("login"))
+
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+# --------------------------------------------------
+# HTML TEMPLATE
+# --------------------------------------------------
+
+BASE_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Secure Login System</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f2f4f7;
+            margin: 0;
+            padding: 40px;
+        }
+
+        .container {
+            width: 400px;
+            margin: auto;
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            text-align: center;
+            color: #1f2937;
+        }
+
+        input {
+            width: 100%;
+            padding: 11px;
+            margin: 8px 0 15px;
+            box-sizing: border-box;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        a {
+            color: #2563eb;
+            text-decoration: none;
+        }
+
+        .message {
+            padding: 10px;
+            margin-bottom: 15px;
+            background: #eef2ff;
+            border-radius: 6px;
+        }
+
+        .error {
+            color: #b91c1c;
+        }
+
+        .success {
+            color: #15803d;
+        }
+
+        .center {
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    {% with messages = get_flashed_messages() %}
+        {% for message in messages %}
+            <div class="message">{{ message }}</div>
+        {% endfor %}
+    {% endwith %}
+
+    {{ content|safe }}
+
+</div>
+
+</body>
+</html>
+"""
+
+
+# --------------------------------------------------
+# HOME
+# --------------------------------------------------
+
+@app.route("/")
+def home():
+
+    if "user_id" in session:
+        return redirect(url_for("dashboard"))
+
+    content = """
+        <h1>Secure Login System</h1>
+
+        <p class="center">
+            Secure authentication using bcrypt password hashing.
+        </p>
+
+        <p class="center">
+            <a href="/register">Create Account</a>
+        </p>
+
+        <p class="center">
+            <a href="/login">Login</a>
+        </p>
+    """
+
+    return render_template_string(
+        BASE_HTML,
+        content=content
+    )
+
+
+# --------------------------------------------------
+# REGISTER
+# --------------------------------------------------
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+
+    if request.method == "POST":
+
+        if not check_csrf():
+            flash("Invalid security token.")
+            return redirect(url_for("register"))
+
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+
+        # Input validation
+        if not valid_username(username):
+            flash(
+                "Username must contain 3-30 letters, numbers or underscores."
+            )
+            return redirect(url_for("register"))
+
+        if not valid_password(password):
+            flash("Password must contain at least 8 characters.")
+            return redirect(url_for("register"))
+
+        if password != confirm_password:
+            flash("Passwords do not match.")
+            return redirect(url_for("register"))
+
+        # Hash password using bcrypt
+        password_hash = bcrypt.hashpw(
+            password.encode("utf-8"),
+            bcrypt.gensalt()
+        ).decode("utf-8")
+
+        conn = get_db()
+
+        try:
+            # Parameterized query prevents SQL injection.
+            conn.execute(
+                """
+                INSERT INTO users
+                (username, password_hash)
+                VALUES (?, ?)
+                """,
+                (username, password_hash)
+            )
+
+            conn.commit()
+
+        except sqlite3.IntegrityError:
+            flash("Username already exists.")
+            conn.close()
+            return redirect(url_for("register"))
+
+        conn.close()
+
+        flash("Registration successful. Please login.")
+        return redirect(url_for("login"))
+
+    csrf_token = get_csrf_token()
+
+    content = f"""
+        <h1>Register</h1>
+
+        <form method="POST">
+
+            <input
+                type="hidden"
+                name="csrf_token"
+                value="{csrf_token}"
+            >
+
+            <label>Username</label>
+
+            <input
+                type="text"
+                name="username"
+                minlength="3"
+                maxlength="30"
+                required
+            >
+
+            <label>Password</label>
+
+            <input
+                type="password"
+                name="password"
+                minlength="8"
+                required
+            >
+
+            <label>Confirm Password</label>
+
+            <input
+                type="password"
+                name="confirm_password"
+                minlength="8"
+                required
+            >
+
+            <button type="submit">
+                Register
+            </button>
+
+        </form>
+
+        <p class="center">
+            Already have an account?
+            <a href="/login">Login</a>
+        </p>
+    """
+
+    return render_template_string(
+        BASE_HTML,
+        content=content
+    )
+
+
+# --------------------------------------------------
+# LOGIN
+# --------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+
+    if request.method == "POST":
+
+        if not check_csrf():
+            flash("Invalid security token.")
+            return redirect(url_for("login"))
+
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+
+        if not username or not password:
+            flash("Username and password are required.")
+            return redirect(url_for("login"))
+
+        conn = get_db()
+
+        # Parameterized SQL query
+        user = conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE username = ?
+            """,
+            (username,)
+        ).fetchone()
+
+        conn.close()
+
+        if user is None:
+            flash("Invalid username or password.")
+            return redirect(url_for("login"))
+
+        stored_hash = user["password_hash"]
+
+        # Secure bcrypt verification
+        if not bcrypt.checkpw(
+            password.encode("utf-8"),
+            stored_hash.encode("utf-8")
+        ):
+            flash("Invalid username or password.")
+            return redirect(url_for("login"))
+
+        # Clear old session data
+        session.clear()
+
+        session["csrf_token"] = secrets.token_urlsafe(32)
+
+        # Check whether 2FA is enabled
+        if user["two_fa_enabled"]:
+
+            session["pending_2fa_user"] = user["id"]
+
+            return redirect(url_for("verify_2fa"))
+
+        # Login successful
+        session["user_id"] = user["id"]
+        session["username"] = user["username"]
+
+        return redirect(url_for("dashboard"))
+
+    csrf_token = get_csrf_token()
+
+    content = f"""
+        <h1>Login</h1>
+
+        <form method="POST">
+
+            <input
+                type="hidden"
+                name="csrf_token"
+                value="{csrf_token}"
+            >
+
+            <label>Username</label>
+
+            <input
+                type="text"
+                name="username"
+                required
+            >
+
+            <label>Password</label>
+
+            <input
+                type="password"
+                name="password"
+                required
+            >
+
+            <button type="submit">
+                Login
+            </button>
+
+        </form>
+
+        <p class="center">
+            Don't have an account?
+            <a href="/register">Register</a>
+        </p>
+    """
+
+    return render_template_string(
+        BASE_HTML,
+        content=content
+    )
+
+
+# --------------------------------------------------
+# 2FA SETUP
+# --------------------------------------------------
+
+@app.route("/enable-2fa", methods=["GET", "POST"])
+@login_required
+def enable_2fa():
+
+    conn = get_db()
+
+    user = conn.execute(
+        "SELECT * FROM users WHERE id = ?",
+        (session["user_id"],)
+    ).fetchone()
+
+    if user["two_fa_enabled"]:
+        conn.close()
+        flash("2FA is already enabled.")
+        return redirect(url_for("dashboard"))
+
+    if request.method == "POST":
+
+        if not check_csrf():
+            conn.close()
+            flash("Invalid security token.")
+            return redirect(url_for("enable_2fa"))
+
+        code = request.form.get("code", "").strip()
+
+        secret = session.get("temporary_2fa_secret")
+
+        if not secret:
+            conn.close()
+            flash("2FA setup expired. Please try again.")
+            return redirect(url_for("enable_2fa"))
+
+        totp = pyotp.TOTP(secret)
+
+        if not totp.verify(code):
+            conn.close()
+            flash("Invalid authentication code.")
+            return redirect(url_for("enable_2fa"))
+
+        conn.execute(
+            """
+            UPDATE users
+            SET two_fa_enabled = 1,
+                two_fa_secret = ?
+            WHERE id = ?
+            """,
+            (secret, session["user_id"])
+        )
+
+        conn.commit()
+        conn.close()
+
+        session.pop("temporary_2fa_secret", None)
+
+        flash("Two-factor authentication enabled.")
+        return redirect(url_for("dashboard"))
+
+    # Generate temporary secret
+    secret = session.get("temporary_2fa_secret")
+
+    if not secret:
+        secret = pyotp.random_base32()
+        session["temporary_2fa_secret"] = secret
+
+    totp = pyotp.TOTP(secret)
+
+    uri = totp.provisioning_uri(
+        name=session["username"],
+        issuer_name="Secure Login System"
+    )
+
+    conn.close()
+
+    csrf_token = get_csrf_token()
+
+    content = f"""
+        <h1>Enable 2FA</h1>
+
+        <p>
+            Add this secret to Google Authenticator,
+            Microsoft Authenticator, or another TOTP app:
+        </p>
+
+        <p>
+            <strong>{secret}</strong>
+        </p>
+
+        <p>
+            Setup URI:
+        </p>
+
+        <textarea
+            style="width:100%;height:80px"
+            readonly
+        >{uri}</textarea>
+
+        <form method="POST">
+
+            <input
+                type="hidden"
+                name="csrf_token"
+                value="{csrf_token}"
+            >
+
+            <label>Enter 6-digit code</label>
+
+            <input
+                type="text"
+                name="code"
+                maxlength="6"
+                pattern="[0-9]{{6}}"
+                required
+            >
+
+            <button type="submit">
+                Enable 2FA
+            </button>
+
+        </form>
+    """
+
+    return render_template_string(
+        BASE_HTML,
+        content=content
+    )
+
+
+# --------------------------------------------------
+# VERIFY 2FA
+# --------------------------------------------------
+
+@app.route("/verify-2fa", methods=["GET", "POST"])
+def verify_2fa():
+
+    user_id = session.get("pending_2fa_user")
+
+    if not user_id:
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+
+        if not check_csrf():
+            flash("Invalid security token.")
+            return redirect(url_for("verify_2fa"))
+
+        code = request.form.get("code", "").strip()
+
+        conn = get_db()
+
+        user = conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,)
+        ).fetchone()
+
+        conn.close()
+
+        if user is None:
+            session.clear()
+            flash("Authentication failed.")
+            return redirect(url_for("login"))
+
+        totp = pyotp.TOTP(user["two_fa_secret"])
+
+        if not totp.verify(code):
+            flash("Invalid 2FA code.")
+            return redirect(url_for("verify_2fa"))
+
+        # Complete login
+        session.clear()
+
+        session["csrf_token"] = secrets.token_urlsafe(32)
+        session["user_id"] = user["id"]
+        session["username"] = user["username"]
+
+        return redirect(url_for("dashboard"))
+
+    csrf_token = get_csrf_token()
+
+    content = f"""
+        <h1>Two-Factor Authentication</h1>
+
+        <p>
+            Enter the 6-digit code from your authenticator app.
+        </p>
+
+        <form method="POST">
+
+            <input
+                type="hidden"
+                name="csrf_token"
+                value="{csrf_token}"
+            >
+
+            <input
+                type="text"
+                name="code"
+                maxlength="6"
+                pattern="[0-9]{{6}}"
+                required
+            >
+
+            <button type="submit">
+                Verify
+            </button>
+
+        </form>
+    """
+
+    return render_template_string(
+        BASE_HTML,
+        content=content
+    )
+
+
+# --------------------------------------------------
+# DASHBOARD
+# --------------------------------------------------
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+
+    conn = get_db()
+
+    user = conn.execute(
+        """
+        SELECT username, two_fa_enabled
+        FROM users
+        WHERE id = ?
+        """,
+        (session["user_id"],)
+    ).fetchone()
+
+    conn.close()
+
+    two_fa_status = (
+        "Enabled"
+        if user["two_fa_enabled"]
+        else "Disabled"
+    )
+
+    content = f"""
+        <h1>Dashboard</h1>
+
+        <p>
+            Welcome,
+            <strong>{user["username"]}</strong>!
+        </p>
+
+        <p>
+            You are securely logged in.
+        </p>
+
+        <p>
+            2FA Status:
+            <strong>{two_fa_status}</strong>
+        </p>
+
+        <p>
+            <a href="/enable-2fa">
+                Enable 2FA
+            </a>
+        </p>
+
+        <p>
+            <a href="/logout">
+                Logout
+            </a>
+        </p>
+    """
+
+    return render_template_string(
+        BASE_HTML,
+        content=content
+    )
+
+
+# --------------------------------------------------
+# LOGOUT
+# --------------------------------------------------
+
+@app.route("/logout")
+def logout():
+
+    session.clear()
+
+    flash("You have been logged out.")
+
+    return redirect(url_for("login"))
+
+
+# --------------------------------------------------
+# START APPLICATION
+# --------------------------------------------------
+
+if __name__ == "__main__":
+
+    init_db()
+
+    app.run(
+        debug=False,
+        host="127.0.0.1",
+        port=5000
+    )
